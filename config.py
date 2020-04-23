@@ -3,7 +3,7 @@ import sys
 import logging
 
 N_CORES = 4
-DEBUG_N = int(os.environ.get('DEBUG_N', 0))
+DEBUG_N = int(os.environ.get('DEBUG_N', 10))
 # TEST_SIZE is used to simulate larger test size for the second stage
 TEST_SIZE = int(os.environ.get('TEST_SIZE', 1))
 VALIDATION_SIZE = float(os.environ.get('VALIDATION_SIZE', 0.05))
@@ -24,22 +24,3 @@ NAME_MAX_LENGTH = 100
 BRAND_NAME_MAX_LENGTH = 100
 
 
-def setup_custom_logger(name):
-    formatter = logging.Formatter(fmt='%(asctime)s %(levelname)-8s %(message)s',
-                                  datefmt='%Y-%m-%d %H:%M:%S')
-
-    handler = logging.FileHandler(f'log-{os.getpid()}.txt', mode='w')
-    handler.setFormatter(formatter)
-
-    screen_handler = logging.StreamHandler(stream=sys.stdout)
-    screen_handler.setFormatter(formatter)
-
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(handler)
-    logger.addHandler(screen_handler)
-
-    return logger
-
-
-logger = setup_custom_logger('mercari')

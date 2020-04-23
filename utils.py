@@ -1,24 +1,16 @@
 import psutil
-import pandas as pd
 import numpy as np
+import pandas as pd
 import time
-from functools import wraps
-from config import logger
 import re
 from functools import lru_cache
-from string import digits
 import config
-from sklearn.linear_model import Lasso
-from functools import partial
-from multiprocessing.pool import ThreadPool
-from config import *
 import unidecode
-import pickle
-import multiprocessing as mp
-from load_data import *
 from nltk import PorterStemmer
+from string import digits
 
 stemmer = PorterStemmer()
+digits_set = set(digits)
 
 
 class Timer:
@@ -26,7 +18,6 @@ class Timer:
         self.message = message
 
     def __enter__(self):
-        logger.info('Starting {}'.format(self.message))
         self.start_clock = time.clock()
         self.start_time = time.time()
 
@@ -38,10 +29,41 @@ class Timer:
         template = "Finished {}. Took {:.2f} seconds, CPU time {:2f}, " \
                    "effectiveness {:.2f}"
 
-        logger.info(template.format(self.message,
-                                    self.interval_time,
-                                    self.interval_clock,
-                                    self.interval_clock / self.interval_time))
+
+class FastTokenizer():
+    _default_word_chars = \
+        u"-&" \
+        u"0123456789" \
+        u"ABCDEFGHIJKLMNOPQRSTUVWXYZ" \
+        u"abcdefghijklmnopqrstuvwxyz" \
+        u"ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞß" \
+        u"àáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ" \
+        u"ĀāĂăĄąĆćĈĉĊċČčĎďĐđĒēĔĕĖėĘęĚěĜĝĞğ" \
+        u"ĠġĢģĤĥĦħĨĩĪīĬĭĮįİıĲĳĴĵĶķĸĹĺĻļĽľĿŀŁł" \
+        u"ńŅņŇňŉŊŋŌōŎŏŐőŒœŔŕŖŗŘřŚśŜŝŞşŠšŢţŤťŦŧ" \
+        u"ŨũŪūŬŭŮůŰűŲųŴŵŶŷŸŹźŻżŽžſ" \
+        u"ΑΒΓΔΕΖΗΘΙΚΛΜΝΟΠΡΣΤΥΦΧΨΩΪΫ" \
+        u"άέήίΰαβγδεζηθικλμνξοπρςστυφχψω"
+
+    _default_word_chars_set = set(_default_word_chars)
+
+    _default_white_space_set = set(['\t', '\n', ' '])
+
+    def __call__(self, text: str):
+        tokens = []
+        for ch in text:
+            if len(tokens) == 0:
+                tokens.append(ch)
+                continue
+            if self._merge_with_prev(tokens, ch):
+                tokens[-1] = tokens[-1] + ch
+            else:
+                tokens.append(ch)
+        return tokens
+
+    def _merge_with_prev(self, tokens, ch):
+        return (ch in self._default_word_chars_set and tokens[-1][-1] in self._default_word_chars_set) or \
+               (ch in self._default_white_space_set and tokens[-1][-1] in self._default_white_space_set)
 
 
 def make_submission(idx, preds, save_as):
@@ -63,22 +85,6 @@ def memory_info():
 def rmsle(y, y0):
     assert len(y) == len(y0)
     return np.sqrt(np.mean(np.power(np.log1p(y) - np.log1p(y0), 2)))
-
-
-def log_time(fn, name):
-    @wraps(fn)
-    def decorator(*args, **kwargs):
-        logger.info(f'[{name}] << starting {fn.__name__}')
-        t0 = time.time()
-
-        try:
-            return fn(*args, **kwargs)
-        finally:
-            dt = time.time() - t0
-            logger.info(f'[{name}] >> finished {fn.__name__} in {dt:.2f} s, '
-                        f'{memory_info()}')
-
-    return decorator
 
 
 _white_spaces = re.compile(r"\s\s+")
@@ -142,97 +148,15 @@ def trim_brand_name(text):
         return text
 
 
-def fit_one(est, X, y):
-    print("fitting y min={} max={}".format(y.min(), y.max()))
-    return est.fit(X, y)
+def has_digit(text):
+    try:
+        return any(c in digits_set for c in text)
+    except:
+        return False
 
 
-def predict_one(est, X):
-    yhat = est.predict(X)
-    print("predicting y min={} max={}".format(yhat.min(), yhat.max()))
-    return yhat
-
-
-def predict_models(X, fitted_models, vectorizer=None, parallel='thread'):
-    if vectorizer:
-        # TODO: parallelize this
-        with Timer('Transforming data'):
-            X = vectorizer.transform(X)
-    predict_one_ = partial(predict_one, X=X)
-    preds = map_parallel(predict_one_, fitted_models, parallel)
-    return np.expm1(np.vstack(preds).T)
-
-
-def fit_models(X_tr, y_tr, models, parallel='thread'):
-    y_tr = np.log1p(y_tr)
-    fit_one_ = partial(fit_one, X=X_tr, y=y_tr)
-    return map_parallel(fit_one_, models, parallel)
-
-
-def map_parallel(fn, lst, parallel, max_processes=4):
-    if parallel == 'thread':
-        with ThreadPool(processes=max_processes) as pool:
-            return pool.map(fn, lst)
-    elif parallel == 'mp':
-        ctx = mp.get_context('spawn')
-        with ctx.Pool(processes=max_processes) as pool:
-            return pool.map(fn, lst)
-    elif parallel is None:
-        return list(map(fn, lst))
-    else:
-        raise ValueError(f'unexpected parallel value: {parallel}')
-
-
-def predict_models_test_batches(models, vectorizer, parallel='thread'):
-    chunk_preds = []
-    test_idx = []
-    for df in load_test_iter():
-        test_idx.append(df.test_id.values)
-        print("Predicting batch {} {}".format(df.test_id.min(), df.test_id.max()))
-        chunk_preds.append(predict_models(df, models, vectorizer=vectorizer, parallel=parallel))
-    predictions = np.vstack(chunk_preds)
-    test_idx = np.concatenate(test_idx)
-    return test_idx, predictions
-
-
-def fit_transform_vectorizer(vectorizer):
-    df_tr, df_va = load_train_validation()
-    y_tr = df_tr.price.values
-    y_va = df_va.price.values
-    X_tr = vectorizer.fit_transform(df_tr, y_tr)
-    X_va = vectorizer.transform(df_va)
-    return X_tr, y_tr, X_va, y_va, vectorizer
-
-
-def fit_validate(models, vectorizer, name=None,
-                 fit_parallel='thread', predict_parallel='thread'):
-    cached_path = 'data_{}.pkl'.format(name)
-    if USE_CACHED_DATASET:
-        assert name is not None
-        with open(cached_path, 'rb') as f:
-            X_tr, y_tr, X_va, y_va, fitted_vectorizer = pickle.load(f)
-        if DEBUG_N:
-            X_tr, y_tr = X_tr[:DEBUG_N], y_tr[:DEBUG_N]
-    else:
-        X_tr, y_tr, X_va, y_va, fitted_vectorizer = fit_transform_vectorizer(vectorizer)
-    if DUMP_DATASET:
-        assert name is not None
-        with open(cached_path, 'wb') as f:
-            pickle.dump((X_tr, y_tr, X_va, y_va, fitted_vectorizer), f)
-    fitted_models = fit_models(X_tr, y_tr, models, parallel=fit_parallel)
-    y_va_preds = predict_models(X_va, fitted_models, parallel=predict_parallel)
-    return fitted_vectorizer, fitted_models, y_va, y_va_preds
-
-
-def merge_predictions(X_tr, y_tr, X_te=None, est=None, verbose=True):
-    if est is None:
-        est = Lasso(alpha=0.0001, precompute=True, max_iter=1000,
-                    positive=True, random_state=9999, selection='random')
-    est.fit(np.log1p(X_tr), np.log1p(y_tr))
-    if hasattr(est, 'intercept_') and verbose:
-        logger.info('merge_predictions = \n{:+.4f}\n{}'.format(
-            est.intercept_,
-            '\n'.join('{:+.4f} * {}'.format(coef, i) for i, coef in
-                      zip(range(X_tr.shape[0]), est.coef_))))
-    return (np.expm1(est.predict(np.log1p(X_tr))),
-            np.expm1(est.predict(np.log1p(X_te))) if X_te is not None else None)
+def try_float(t):
+    try:
+        return float(t)
+    except:
+        return 0

@@ -3,20 +3,125 @@ import pandas as pd
 from tqdm import tqdm
 from multiprocessing.pool import Pool
 from functools import partial
+import array
 from scipy.sparse import csr_matrix
 from sklearn.base import BaseEstimator, TransformerMixin
 from utils import *
+from collections import defaultdict
+from sklearn.feature_extraction.text import _make_int_array, CountVectorizer
+from config import *
 
 
 class SparseMatrixOptimize(BaseEstimator, TransformerMixin):
     def __init__(self, dtype=np.float32):
         self.dtype = dtype
 
-    def fit(self, X, *args):
+    def fit(self, X, *arg):
         return self
 
     def transform(self, X):
         return csr_matrix(X, dtype=self.dtype)
+
+
+class FeaturesEngItemDescription(BaseEstimator, TransformerMixin):
+    def fit(self, X, *arg):
+        return self
+
+    def transform(self, X):
+        out = pd.DataFrame()
+        out['lt'] = np.log1p(X['desc_clean'].str.len()) / 100.0
+        out['yd'] = X['desc_clean'].map(str).map(extract_year) / 2000.0
+        out['nw'] = np.log1p(X['desc_clean'].str.split().map(len))
+        return out.values
+
+
+class FeaturesEngName(BaseEstimator, TransformerMixin):
+    def fit(self, X, *arg):
+        return self
+
+    def transform(self, X):
+        out = pd.DataFrame()
+        out['lt'] = np.log1p(X['name_clean'].str.len()) / 100.0
+        out['yd'] = X['name_clean'].map(str).map(extract_year) / 2000.0
+        out['nw'] = np.log1p(X['name_clean'].str.split().map(len))
+        return out.values
+
+
+class FeaturesPatterns(BaseEstimator, TransformerMixin):
+    patterns = [
+        "([0-9.]+)[ ]?\$",
+        "\$[ ]?([0-9.]+)",
+        "paid ([0-9.]+)",
+        "bought for (\d+)"
+        "(10|14|18|24) gold",
+        "of (\d+) ",
+        " (\d+) ship",
+        "is for all (\d+)",
+        "is for (\d+)",
+        "firm for (\d+)",
+        "bundl \w+ (\d+) ",
+        "(\d+) in 1",
+        "^(\d+)",
+        "\d+ for (\d+)",
+        " x(\d+)",
+        "\b(\d+)x\b",
+        "(\d+)% left",
+        "(\d+)[ ]?lipstick",
+    ]
+
+    def __init__(self, column):
+        self.column = column
+
+    def fit(self, X, *arg):
+        return self
+
+    def transform(self, X):
+        cols = []
+        self.features_names = []
+        X_ = X[self.column].map(lambda x: "" if has_digit(x) else x)
+        for pattern_name in tqdm(self.patterns):
+            new_col = 'regex_pattern_{}_{}'.format(pattern_name, self.column)
+            # TODO: parallelize this
+            raw_val = X_.str.extract(pattern_name, expand=False).fillna(0)
+            if isinstance(raw_val, pd.DataFrame):
+                raw_val = raw_val.iloc[:, 0]
+            X[new_col] = raw_val.map(try_float)
+            X[X[new_col] > 2000] = 0
+            X[new_col] = np.log1p(X[new_col])
+            cols.append(new_col)
+            self.features_names.append(new_col)
+        return csr_matrix(X.ix[:, cols].values)
+
+    def get_feature_names(self):
+        return self.features_names
+
+
+class PandasToRecords(BaseEstimator, TransformerMixin):
+    def fit(self, X, *arg):
+        return self
+
+    def transform(self, X):
+        return X.to_dict(orient='records')
+
+
+class SparsityFilter(BaseEstimator, TransformerMixin):
+    def __init__(self, min_nnz=None):
+        self.min_nnz = min_nnz
+
+    def fit(self, X, y=None):
+        self.sparsity = X.getnnz(0)
+        return self
+
+    def transform(self, X):
+        return X[:, self.sparsity >= self.min_nnz]
+
+
+class ReportShape(BaseEstimator, TransformerMixin):
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        return X
 
 
 class FillEmpty(BaseEstimator, TransformerMixin):
@@ -25,96 +130,40 @@ class FillEmpty(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X):
-        X['name'].fillna('unk', inplace=True)
-        X['item_condition_id'] = X['item_condition_id'].fillna('unk')
-        X['category_name'].fillna('unk', inplace=True)
-        X['brand_name'].fillna('unk', inplace=True)
+        X['name'].fillna(UNK, inplace=True)
+        X['item_condition_id'] = X['item_condition_id'].fillna(UNK)
+        X['category_name'].fillna(UNK, inplace=True)
+        X['brand_name'].fillna(UNK, inplace=True)
         X['shipping'].fillna(0, inplace=True)
-        X['item_description'].fillna('unk', inplace=True)
+        X['item_description'].fillna(UNK, inplace=True)
         return X
 
 
-class FastTokenizer():
-    def __init__(self):
-        self._default_word_chars = \
-            u"-&" \
-            u"0123456789" \
-            u"ABCDEFGHIJKLMNOPQRSTUVWXYZ" \
-            u"abcdefghijklmnopqrstuvwxyz" \
-            u"ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞß" \
-            u"àáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ" \
-            u"ĀāĂăĄąĆćĈĉĊċČčĎďĐđĒēĔĕĖėĘęĚěĜĝĞğ" \
-            u"ĠġĢģĤĥĦħĨĩĪīĬĭĮįİıĲĳĴĵĶķĸĹĺĻļĽľĿŀŁł" \
-            u"ńŅņŇňŉŊŋŌōŎŏŐőŒœŔŕŖŗŘřŚśŜŝŞşŠšŢţŤťŦŧ" \
-            u"ŨũŪūŬŭŮůŰűŲųŴŵŶŷŸŹźŻżŽžſ" \
-            u"ΑΒΓΔΕΖΗΘΙΚΛΜΝΟΠΡΣΤΥΦΧΨΩΪΫ" \
-            u"άέήίΰαβγδεζηθικλμνξοπρςστυφχψω"
-        self._default_word_chars_set = set(self._default_word_chars)
+class ConcatTexts(BaseEstimator, TransformerMixin):
 
-        self._default_white_space_set = {'\t', '\n', ' '}
+    def __init__(self, columns, use_separators=True, output_col='text_concat'):
+        self.use_separators = use_separators
+        self.columns = columns
+        self.output_col = output_col
 
-    def __call__(self, text):
-        token = []
-        for char in text:
-            if len(token) == 0:
-                token.append(char)
-                continue
-            if self._merge_with_prev(token, char):
-                token[-1] = token[-1] + char
-            else:
-                token.append(char)
-
-    def _merge_with_prev(self, tokens, ch):
-        return (ch in self._default_word_chars_set and tokens[-1][-1] in self._default_word_chars_set) or \
-               (ch in self._default_white_space_set and tokens[-1][-1] in self._default_white_space_set)
-
-
-class PreprocessDataPJ(BaseEstimator, TransformerMixin):
-    def __init__(self, n_jobs=4, hash_chars=False, stem=True):
-        self.n_jobs = n_jobs
-        self.hash_chars = hash_chars
-        self.stem = stem
-
-    def fit(self, X):
+    def fit(self, X, *args):
         return self
 
     def transform(self, X):
-        tokenizer = FastTokenizer()
-        clean_text_ = partial(clean_text, tokenizer=tokenizer, hashchars=self.hash_chars)
-        X['item_condition_id'] = X['item_condition_id'].fillna('UNK').astype(str)
-        X['shipping'] = X['shipping'].astype(str)
-        X['item_description'][X['item_description'] == 'No description yet'] = 'unk'
-        X['item_description'] = X['item_description'].fillna('').astype(str)
-        X['name'] = X['name'].fillna('').astype(str)
-
-        # trim
-        X['item_description'] = X['item_description'].map(trim_description)
-        X['name'] = X['name'].map(trim_name)
-        X['brand_name'] = X['brand_name'].map(trim_brand_name)
-
-        if self.stem:
-            with Pool(4) as pool:
-                X['name_clean'] = pool.map(clean_text_, tqdm(X['name'], mininterval=2), chunksize=1000)
-                X['desc_clean'] = pool.map(clean_text_, tqdm(X['item_description'], mininterval=2), chunksize=1000)
-                X['brand_name_clean'] = pool.map(clean_text_, tqdm(X['brand_name'], mininterval=2), chunksize=1000)
-                X['category_name_clean'] = pool.map(clean_text_, tqdm(X['category_name'], mininterval=2),
-                                                    chunksize=1000)
-
-        # handle category_name
-        cat_def = ['unk', 'unk', 'unk']
-        X['no_cat'] = X['category_name'].isnull().map(int)
-        X['cat_split'] = X['category_name'].fillna('/'.join(cat_def)).map(lambda x: x.split('/'))
-        X['cat_1'] = X['cat_split'].map(lambda x: x[0] if isinstance(x, list) and len(x) >= 1 else cat_def).str.lower()
-        X['cat_2'] = X['cat_split'].map(lambda x: x[1] if isinstance(x, list) and len(x) >= 2 else cat_def).str.lower()
-        X['cat_3'] = X['cat_split'].map(lambda x: x[2] if isinstance(x, list) and len(x) >= 3 else cat_def).str.lower()
-        X['is_bundle'] = (X['item_description'].str.find('bundl') >= 0).map(int)
-
+        X[self.output_col] = ''
+        if self.use_separators:
+            for i, col in enumerate(self.columns):
+                X[self.output_col] += ' cs00{} '.format(i)
+                X[self.output_col] += X[col]
+        else:
+            for i, col in enumerate(self.columns):
+                X[self.output_col] += X[col]
         return X
 
 
 class PandasSelector(BaseEstimator, TransformerMixin):
-
-    def __init__(self, columns=None, dtype=None, inverse=False, return_vector=True):
+    def __init__(self, columns=None, dtype=None, inverse=False,
+                 return_vector=True):
         self.dtype = dtype
         self.columns = columns
         self.inverse = inverse
@@ -128,7 +177,7 @@ class PandasSelector(BaseEstimator, TransformerMixin):
                (self.columns is not None and col in self.columns)
         return self.inverse ^ cond
 
-    def fit(self, X, y=None):
+    def fit(self, x, y=None):
         return self
 
     def _check_if_all_columns_present(self, x):
@@ -140,16 +189,18 @@ class PandasSelector(BaseEstimator, TransformerMixin):
                                missing_columns_)
 
     def transform(self, x):
+        # print(type(x))
         # check if x is a pandas DataFrame
         if not isinstance(x, pd.DataFrame):
             raise KeyError('Input is not a pandas DataFrame')
 
         selected_cols = []
-        for col in self.columns:
+        for col in x.columns:
             if self.check_condition(x, col):
                 selected_cols.append(col)
 
-        # if the column was selected and inversed = False make sure the column is in the DataFrame
+        # if the column was selected and inversed = False make sure the column
+        # is in the DataFrame
         self._check_if_all_columns_present(x)
 
         # if only 1 column is returned return a vector instead of a dataframe
@@ -159,57 +210,44 @@ class PandasSelector(BaseEstimator, TransformerMixin):
             return x[selected_cols]
 
 
-class ConcatTexts(BaseEstimator, TransformerMixin):
-    def __init__(self, columns, use_separators=True, output_col='text_concat'):
-        self.columns = columns
-        self.use_separators = use_separators
-        self.output_col = output_col
+class FalseBrands(BaseEstimator, TransformerMixin):
 
-    def fit(self, X, *args):
-        return self
-
-    def transform(self, X):
-        X[self.output_col] = ''
-
-        if self.use_separators:
-            for i, col in enumerate(self.columns):
-                X[self.output_col] += ' cs00{} '.format(i)
-                X[self.output_col] += X[col]
-        else:
-            for col in self.columns:
-                X[self.output_col] += X[col]
-
-        return X
-
-
-class PandasToRecords(BaseEstimator, TransformerMixin):
-    def fit(self, X, *args):
-        return self
-
-    def transform(self, X):
-        return X.to_dict(orient='records')
-
-
-class ReportShape(BaseEstimator, TransformerMixin):
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        logger.info('=' * 30)
-        logger.info("Matrix shape {} min {} max {}".format(X.shape, X.min(), X.max()))
-        logger.info('=' * 30)
-        return X
-
-
-class SanitizeSparseMatrix(BaseEstimator, TransformerMixin):
     def fit(self, X, y):
-        self.datamax = np.nanmax(X.data)
         return self
 
+    def false_brand_detector(self, prefix):
+        def helper(row):
+            return prefix + ' ' + str(row.brand_name).lower() in str(row.item_description).lower()
+
+        return helper
+
     def transform(self, X):
-        X.data[np.isnan(X.data)] = 0
-        X.data = X.data.clip(0, self.datamax)
-        return X
+        return pd.DataFrame({
+            'for_brand': X.apply(self.false_brand_detector('for'), axis=1),
+            'like_brand': X.apply(self.false_brand_detector('like'), axis=1),
+            'fits_brand': X.apply(self.false_brand_detector('fits'), axis=1)
+        })
+
+
+def trim_description(text):
+    if text and isinstance(text, str):
+        return text[:ITEM_DESCRIPTION_MAX_LENGTH]
+    else:
+        return text
+
+
+def trim_name(text):
+    if text and isinstance(text, str):
+        return text[:NAME_MAX_LENGTH]
+    else:
+        return text
+
+
+def trim_brand_name(text):
+    if text and isinstance(text, str):
+        return text[:BRAND_NAME_MAX_LENGTH]
+    else:
+        return text
 
 
 class PreprocessDataKL(BaseEstimator, TransformerMixin):
@@ -224,8 +262,8 @@ class PreprocessDataKL(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         # fill missing values
-        X['category_name'] = X['category_name'].fillna('unk').map(str)
-        X['brand_name'] = X['brand_name'].fillna('unk').map(str)
+        X['category_name'] = X['category_name'].fillna('unknown').map(str)
+        X['brand_name'] = X['brand_name'].fillna('unknown').map(str)
         X['item_description'] = X['item_description'].fillna('').map(str)
         X['name'] = X['name'].fillna('').map(str)
 
@@ -250,5 +288,178 @@ class PreprocessDataKL(BaseEstimator, TransformerMixin):
         X['no_description'] = no_description.astype(str)
         X['item_condition_id'] = X['item_condition_id'].map(str)
         X['shipping'] = X['shipping'].map(str)
+        return X
 
+
+class PreprocessDataPJ(BaseEstimator, TransformerMixin):
+
+    def __init__(self, n_jobs=4, hashchars=False, stem=True):
+        self.n_jobs = n_jobs
+        self.hashchars = hashchars
+        self.stem = stem
+
+    def fit(self, X, y):
+        return self
+
+    def transform(self, X):
+        tokenizer = FastTokenizer()
+        clean_text_ = partial(clean_text, tokenizer=tokenizer, hashchars=self.hashchars)
+        X['item_condition_id'] = X['item_condition_id'].fillna('UNK').astype(str)
+        X['shipping'] = X['shipping'].astype(str)
+        X['item_description'][X['item_description'] == 'No description yet'] = UNK
+        X['item_description'] = X['item_description'].fillna('').astype(str)
+        X['name'] = X['name'].fillna('').astype(str)
+
+        # trim
+        X['item_description'] = X['item_description'].map(trim_description)
+        X['name'] = X['name'].map(trim_name)
+        X['brand_name'] = X['brand_name'].map(trim_brand_name)
+
+        if self.stem:
+            with Pool(4) as pool:
+                X['name_clean'] = pool.map(clean_text_, tqdm(X['name'], mininterval=2), chunksize=1000)
+                X['desc_clean'] = pool.map(clean_text_, tqdm(X['item_description'], mininterval=2), chunksize=1000)
+                X['brand_name_clean'] = pool.map(clean_text_, tqdm(X['brand_name'], mininterval=2), chunksize=1000)
+                X['category_name_clean'] = pool.map(clean_text_, tqdm(X['category_name'], mininterval=2),
+                                                    chunksize=1000)
+        X['no_cat'] = X['category_name'].isnull().map(int)
+        cat_def = [UNK, UNK, UNK]
+        X['cat_split'] = X['category_name'].fillna('/'.join(cat_def)).map(lambda x: x.split('/'))
+        X['cat_1'] = X['cat_split'].map(
+            lambda x: x[0] if isinstance(x, list) and len(x) >= 1 else cat_def).str.lower()
+        X['cat_2'] = X['cat_split'].map(
+            lambda x: x[1] if isinstance(x, list) and len(x) >= 2 else cat_def).str.lower()
+        X['cat_3'] = X['cat_split'].map(
+            lambda x: x[2] if isinstance(x, list) and len(x) >= 3 else cat_def).str.lower()
+        X['is_bundle'] = (X['item_description'].str.find('bundl') >= 0).map(int)
+
+        return X
+
+
+class ExtractSpecifics(BaseEstimator, TransformerMixin):
+
+    def fit(self, X, y):
+        return self
+
+    def transform(self, X):
+        keys = {"1", "2", "3", "4", "5", "7", "8", "9", "a", "as", "at", "b", "bars", "beautiful",
+                "boots", "bottles", "bowls", "box", "boxes", "brand", "bras", "bucks",
+                "cans", "card", "cards", "case", "cm", "comes",
+                "compartments", "controllers", "cream", "credit", "crop", "dd",
+                "dollar", "dollars", "dolls", "dress", "dvds", "each", "edition", "euc",
+                "fashion", "feet", "fits", "fl", "ft", "g", "games", "gb",
+                "gms", "gold", "gram", "grams",
+                "hr", "hrs", "in", "inch", "inches", "k",
+                "karat", "layers", "up",
+                "meter", "mil", "mini", "mint", "ml", "mm", "month", "mugs", "no", "not", "nwt", "off",
+                "onesies", "opi", "ounce", "ounces", "outfits", "oz", "packages", "packets", "packs", "pair", "panels",
+                "pants", "patches", "pc", "pics", "piece", "pieces", "pokémon",
+                "pokemon", "pounds", "price", "protection", "random", "retro", "ring", "rings", "rolls",
+                "samples", "sandals", "series", "sets", "sheets", "shirts", "shoe", "shoes",
+                "shows", "slots", "small", "so", "some", "stamped", "sterling", "stickers", "still", "stretch",
+                "strips", "summer", "t", "tags", "tiny", "tone", "tubes", "victoria", "vinyl", "w", "waist",
+                "waistband", "waterproof", "watt", "white", "wireless", "x10", "x13", "x15", "x3", "x4", "x5", "x6",
+                "x7", "x8", "x9", "yrs", "½", "lipsticks", "bar", "apple", "access", "wax", "monster", "spell",
+                "spinners", "lunch", "ac", "jamberry", "medal", "gerard"}
+        regex = re.compile("(\d+)[ ]?(\w+)", re.IGNORECASE)
+
+        specifics = []
+        for x in X:
+            spec = {}
+            for val, key in regex.findall(str(x), re.IGNORECASE):
+                if key in keys:
+                    val = try_float(val)
+                    if val > 3000:
+                        continue
+                    spec[key] = val
+                    spec['{}_{}'.format(key, val)] = 1
+            specifics.append(spec)
+
+        return specifics
+
+
+def _make_float_array():
+    """Construct an array.array of a type suitable for scipy.sparse indices."""
+    return array.array(str("f"))
+
+
+class PredictProbaTransformer(BaseEstimator, TransformerMixin):
+
+    def __init__(self, est, target_column):
+        self.target_column = target_column
+        self.est = est
+
+    def fit(self, X, y):
+        self.est.fit(X, X[self.target_column])
+        return self
+
+    def transform(self, X):
+        return self.est.predict_proba(X)
+
+
+class NumericalVectorizer(CountVectorizer):
+    def _count_vocab(self, raw_documents, fixed_vocab):
+        """Create sparse feature matrix, and vocabulary where fixed_vocab=False
+        """
+        if fixed_vocab:
+            vocabulary = self.vocabulary_
+        else:
+            # Add a new value when a new vocabulary item is seen
+            vocabulary = defaultdict()
+            vocabulary.default_factory = vocabulary.__len__
+
+        analyze = self.build_analyzer()
+        j_indices = []
+        indptr = _make_int_array()
+        values = _make_float_array()
+        indptr.append(0)
+        for doc in raw_documents:
+            feature_counter = {}
+            current_num = 0
+            for feature in analyze(doc):
+                maybe_float = try_float(feature)
+                if maybe_float > 0 and maybe_float <= 200:
+                    current_num = maybe_float
+                    continue
+                try:
+                    if current_num == 0:
+                        continue
+                    feature_idx = vocabulary[feature]
+                    if feature_idx not in feature_counter:
+                        feature_counter[feature_idx] = current_num / 200
+                        current_num = 0
+                except KeyError:
+                    # Ignore out-of-vocabulary items for fixed_vocab=True
+                    continue
+
+            j_indices.extend(feature_counter.keys())
+            values.extend(feature_counter.values())
+            indptr.append(len(j_indices))
+
+        if not fixed_vocab:
+            # disable defaultdict behaviour
+            vocabulary = dict(vocabulary)
+            if not vocabulary:
+                raise ValueError("empty vocabulary; perhaps the documents only"
+                                 " contain stop words")
+
+        j_indices = np.asarray(j_indices, dtype=np.intc)
+        indptr = np.frombuffer(indptr, dtype=np.intc)
+        values = np.frombuffer(values, dtype=np.float32)
+
+        X = csr_matrix((values, j_indices, indptr),
+                       shape=(len(indptr) - 1, len(vocabulary)),
+                       dtype=np.float32)
+        X.sort_indices()
+        return vocabulary, X
+
+
+class SanitizeSparseMatrix(BaseEstimator, TransformerMixin):
+    def fit(self, X, y):
+        self.datamax = np.nanmax(X.data)
+        return self
+
+    def transform(self, X):
+        X.data[np.isnan(X.data)] = 0
+        X.data = X.data.clip(0, self.datamax)
         return X

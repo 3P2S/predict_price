@@ -12,12 +12,10 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_log_error
 import tensorflow as tf
 
-from utils import log_time, memory_info
+from utils import  memory_info
 from model.regression_clf import (
     binarize, get_mean_percentiles, get_percentiles,
 )
-
-log_time = partial(log_time, name='tf_sparse')
 
 
 def identity(x):

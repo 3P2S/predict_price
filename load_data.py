@@ -4,7 +4,7 @@ from sklearn.model_selection import train_test_split
 from config import DEBUG, DEBUG_N, TEST_SIZE, TEST_CHUNK, VALIDATION_SIZE
 
 
-def load_train(path='../input/train.tsv'):
+def load_train(path='./input/train_10k.tsv'):
     if DEBUG:
         return pd.read_csv(path, sep='\t').query('price > 0').iloc[:DEBUG_N, :]
     else:
@@ -17,7 +17,7 @@ def load_train_validation():
 
 def load_test_iter():
     for _ in range(TEST_SIZE):
-        for df in pd.read_csv('../input/test.tsv', sep='\t', chunksize=TEST_CHUNK):
+        for df in pd.read_csv('./input/test.tsv', sep='\t', chunksize=TEST_CHUNK):
             if DEBUG:
                 yield df.iloc[:DEBUG_N]
             else:

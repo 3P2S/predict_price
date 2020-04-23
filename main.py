@@ -2,10 +2,12 @@ import os
 import joblib
 import traceback
 
-from data import *
+from preprocess import *
 from config import *
 from utils import rmsle
 from model.model import RegressionHuber, prelu, RegressionClf
+from model import utils
+import load_data
 
 
 def define_models_1(n_jobs, seed):
@@ -68,13 +70,15 @@ def main(name, action, arg_map, fit_parallel='thread', predict_parallel='thread'
     if action in ("1", "2", "3"):
         model_round = int(action)
         models, vectorizer = arg_map[model_round]
-        vectorizer, fitted_models, y_va, y_va_preds = fit_validate(
-            models, vectorizer, name=model_round,
-            fit_parallel=fit_parallel, predict_parallel=predict_parallel)
+        vectorizer, fitted_models, y_va, y_va_preds = utils.fit_validate(models,
+                                                                         vectorizer,
+                                                                         name=model_round,
+                                                                         fit_parallel=fit_parallel,
+                                                                         predict_parallel=predict_parallel)
         joblib.dump(y_va_preds, "{}_va_preds.pkl".format(prefix(model_round)), compress=3)
         if HANDLE_TEST:
-            test_idx, y_te_preds = predict_models_test_batches(
-                fitted_models, vectorizer, parallel=predict_parallel)
+            test_idx, y_te_preds = utils.predict_models_test_batches(fitted_models, vectorizer,
+                                                                     parallel=predict_parallel)
             joblib.dump(y_te_preds, "{}_te_preds.pkl".format(prefix(model_round)), compress=3)
             joblib.dump(test_idx, "test_idx.pkl", compress=3)
         joblib.dump(y_va, "y_va.pkl", compress=3)
@@ -99,7 +103,7 @@ def main(name, action, arg_map, fit_parallel='thread', predict_parallel='thread'
         else:
             te_preds = None
         y_va = joblib.load("y_va.pkl")
-        va_preds_merged, te_preds_merged = merge_predictions(X_tr=va_preds, y_tr=y_va, X_te=te_preds)
+        va_preds_merged, te_preds_merged = utils.merge_predictions(X_tr=va_preds, y_tr=y_va, X_te=te_preds)
         print("Stacking rmsle", rmsle(y_va, va_preds_merged))
         if HANDLE_TEST:
             test_idx = joblib.load("test_idx.pkl")
@@ -113,9 +117,9 @@ def main(name, action, arg_map, fit_parallel='thread', predict_parallel='thread'
             te_preds.append(joblib.load("{}_te_preds.pkl".format(prefix(model_round))))
         va_preds = np.hstack(va_preds)
         te_preds = np.hstack(te_preds)
-        _, df_va = load_train_validation()
+        _, df_va = load_data.load_train_validation()
         y_va = joblib.load("y_va.pkl")
-        va_preds_merged, te_preds_merged = merge_predictions(X_tr=va_preds, y_tr=y_va, X_te=te_preds)
+        va_preds_merged, te_preds_merged = utils.merge_predictions(X_tr=va_preds, y_tr=y_va, X_te=te_preds)
         print("Stacking rmsle", rmsle(y_va, va_preds_merged))
         df_va['preds'] = va_preds_merged
         df_va['err'] = (np.log1p(df_va['preds']) - np.log1p(df_va['price'])) ** 2

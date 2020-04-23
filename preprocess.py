@@ -12,8 +12,7 @@ def prepare_vectorizer_1(n_jobs=4):
     vectorizer = make_pipeline(
         FillEmpty(),
         PreprocessDataPJ(n_jobs=n_jobs),
-        make_union_mp([
-
+        make_union(
             make_pipeline(
                 PandasSelector(columns=['name', 'item_description']),
                 ConcatTexts(columns=['name', 'item_description'],
@@ -21,21 +20,18 @@ def prepare_vectorizer_1(n_jobs=4):
                 PandasSelector(columns=['text_concat']),
                 CountVectorizer(ngram_range=(1, 1), binary=True, min_df=5, tokenizer=tokenizer, dtype=np.float32)
             ),
-
             make_pipeline(PandasSelector(columns=['desc_clean']),
                           CountVectorizer(tokenizer=tokenizer,
                                           binary=True,
                                           min_df=5,
                                           ngram_range=(1, 1),
                                           dtype=np.float32)),
-
             make_pipeline(PandasSelector(columns=['name_clean']),
                           CountVectorizer(binary=True,
                                           analyzer='char_wb',
-                                          min_df=25,
+                                          max_df=25,
                                           ngram_range=(3, 3),
                                           dtype=np.float32)),
-
             make_pipeline(PandasSelector(columns=['name_clean']),
                           CountVectorizer(tokenizer=tokenizer,
                                           binary=True,
@@ -43,7 +39,6 @@ def prepare_vectorizer_1(n_jobs=4):
                                           ngram_range=(1, 1),
                                           dtype=np.float32),
                           SparseMatrixOptimize()),
-
             make_pipeline(PandasSelector(columns=['category_name_clean']),
                           CountVectorizer(tokenizer=tokenizer,
                                           binary=True,
@@ -53,8 +48,8 @@ def prepare_vectorizer_1(n_jobs=4):
             make_pipeline(PandasSelector(columns=['shipping', 'item_condition_id', 'brand_name_clean',
                                                   'cat_1', 'cat_2', 'cat_3', 'no_cat']),
                           PandasToRecords(),
-                          DictVectorizer(dtype=np.float32)),
-        ], n_jobs=n_jobs),
+                          DictVectorizer(dtype=np.float32))
+            , n_jobs=n_jobs),
         SparseMatrixOptimize(),
         SanitizeSparseMatrix(),
         ReportShape()
