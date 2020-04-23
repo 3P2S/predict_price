@@ -157,13 +157,13 @@ def prepare_vectorizer_3(n_jobs=4):
                 ConcatTexts(columns=['name_clean', 'brand_name_clean', 'category_name', 'desc_clean'],
                             use_separators=True),
                 PandasSelector(columns=['text_concat']),
-                TfidfVectorizer(ngram_range=(2, 2), binary=True, min_df=5, token_pattern=token_pattern),
+                TfidfVectorizer(ngram_range=(2, 2), binary=True, max_df=25, token_pattern=token_pattern),
                 ReportShape()
             )),
 
             ('name_chargrams', make_pipeline(
                 PandasSelector('name'),
-                TfidfVectorizer(ngram_range=(3, 3), analyzer='char', binary=True, min_df=5),
+                TfidfVectorizer(ngram_range=(3, 3), analyzer='char', binary=True, max_df=25),
             )),
 
             ('ohe', make_pipeline(
