@@ -1,10 +1,12 @@
 import numpy as np
+
+from transformers import *
+# from feature_union import *
+
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
-from sklearn.pipeline import make_pipeline, make_union
+from sklearn.pipeline import make_pipeline, make_union, FeatureUnion
 from sklearn.feature_extraction.text import CountVectorizer
-from transformers import *
-from feature_union import *
 
 
 def prepare_vectorizer_1(n_jobs=4):
@@ -94,7 +96,7 @@ def prepare_vectorizer_2(n_jobs=4):
     vectorizer = make_pipeline(
         FillEmpty(),
         PreprocessDataKL(num_brands=num_brands, repl_patterns=REPL_PATTERNS),
-        FeatureUnionMP([
+        FeatureUnion([
 
             ('descr_idf', make_pipeline(
                 PandasSelector('item_description'),
@@ -140,7 +142,7 @@ def prepare_vectorizer_3(n_jobs=4):
     vectorizer = make_pipeline(
         FillEmpty(),
         PreprocessDataPJ(n_jobs=n_jobs),
-        FeatureUnionMP([
+        FeatureUnion([
 
             ('tf_idf_1g', make_pipeline(
                 PandasSelector(columns=['name_clean', 'brand_name_clean', 'category_name', 'desc_clean']),
